@@ -47,28 +47,25 @@ class PDFScene(QGraphicsScene):
             # Factor de zoom usado en la vista previa
             zoom = 2.0
             
-            # Obtener dimensiones de la página actual
+            # Obtener dimensiones de la página actual en cm
             page_dims = self.document.page_dimensions[signature.page_number]
-            page_height = float(page_dims.height)
+            page_height_cm = DocumentModel.points_to_cm(float(page_dims.height))
             
             print("\n=== DEBUG: Actualización de posición ===")
             print(f"Posición UI (raw): ({pos.x()}, {pos.y()})")
-            print(f"Dimensiones página: {page_dims.width}x{page_height}")
-            print(f"Altura firma: {signature.size.height}")
             
-            # Convertir coordenadas
-            pdf_x = pos.x() / zoom
-            # Convertir Y considerando:
-            # 1. Quitar el zoom
-            # 2. Invertir desde abajo (página PDF) a desde arriba (Qt)
-            # 3. Considerar altura de la firma
-            ui_y = pos.y() / zoom  # Quitar zoom
-            pdf_y = ui_y  # Mantener Y como está en UI
+            # Convertir a centímetros
+            pos_x_cm = DocumentModel.points_to_cm(pos.x() / zoom)
+            pos_y_cm = DocumentModel.points_to_cm(pos.y() / zoom)
             
-            signature.position.x = pdf_x
-            signature.position.y = pdf_y
+            print(f"Posición en cm desde arriba: ({pos_x_cm:.2f}, {pos_y_cm:.2f})")
+            print(f"Altura página en cm: {page_height_cm:.2f}")
             
-            print(f"Posición convertida a PDF: ({pdf_x}, {pdf_y})")
+            # Guardar posición en el modelo (en puntos PDF)
+            signature.position.x = DocumentModel.cm_to_points(pos_x_cm)
+            signature.position.y = DocumentModel.cm_to_points(pos_y_cm)
+            
+            print(f"Posición guardada en puntos PDF: ({signature.position.x:.2f}, {signature.position.y:.2f})")
 
     def wheelEvent(self, event):
         """Maneja el zoom con la rueda del mouse"""

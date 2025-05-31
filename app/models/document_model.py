@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, validator
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, ClassVar
 from .signature_model import SignatureModel
 import os
 
@@ -19,6 +19,9 @@ class DocumentModel(BaseModel):
         description="Lista de firmas a insertar"
     )
     
+    # Constantes de conversión con anotación de tipo
+    POINTS_PER_CM: ClassVar[float] = 28.3465  # 1 cm = 28.3465 puntos PDF
+    
     @validator('pdf_path')
     def validate_pdf_path(cls, v):
         if not os.path.exists(v):
@@ -26,6 +29,14 @@ class DocumentModel(BaseModel):
         if not v.lower().endswith('.pdf'):
             raise ValueError("El archivo debe ser un PDF")
         return v
+
+    @staticmethod
+    def points_to_cm(points: float) -> float:
+        return points / DocumentModel.POINTS_PER_CM
+    
+    @staticmethod
+    def cm_to_points(cm: float) -> float:
+        return cm * DocumentModel.POINTS_PER_CM
 
     def add_signature(self, signature: SignatureModel) -> None:
         """Añade una firma al documento"""

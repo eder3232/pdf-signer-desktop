@@ -2,6 +2,7 @@ import fitz
 import io
 from PIL import Image
 from typing import Dict, Any
+from app.models.document_model import DocumentModel
 
 class PDFSigner:
     def __init__(self):
@@ -53,8 +54,10 @@ class PDFSigner:
             print(f"""
 Firma:
   - Página: {sig['page_number']}
-  - Posición: ({sig['position']['x']}, {sig['position']['y']})
-  - Tamaño: {sig['size']['width']}x{sig['size']['height']}
+  - Posición (puntos): ({sig['position']['x']:.2f}, {sig['position']['y']:.2f})
+  - Posición (cm desde arriba): ({DocumentModel.points_to_cm(sig['position']['x']):.2f}, {DocumentModel.points_to_cm(sig['position']['y']):.2f})
+  - Tamaño (puntos): {sig['size']['width']}x{sig['size']['height']}
+  - Tamaño (cm): {DocumentModel.points_to_cm(sig['size']['width']):.2f}x{DocumentModel.points_to_cm(sig['size']['height']):.2f}
   - Ruta: {sig['image_path']}
 """)
         
@@ -185,18 +188,41 @@ Firma:
         """Calcula la posición final de la firma"""
         w_img, h_img = img_size
         
-        print("\n=== DEBUG: Cálculo de posición PDF ===")
-        print(f"Página: {page_rect.width}x{page_rect.height}")
-        print(f"Imagen: {w_img}x{h_img}")
-        print(f"Posición entrada: x={position['x']}, y={position['y']}")
+        # Convertir todo a centímetros
+        page_height_cm = DocumentModel.points_to_cm(page_rect.height)
+        pos_x_cm = DocumentModel.points_to_cm(position['x'])
+        pos_y_cm = DocumentModel.points_to_cm(position['y'])
+        h_img_cm = DocumentModel.points_to_cm(h_img)
+        w_img_cm = DocumentModel.points_to_cm(w_img)
         
-        # Convertir coordenadas Y de Qt (desde arriba) a PDF (desde abajo)
+        print("\n=== DEBUG: Cálculo de posición PDF ===")
+        print(f"Dimensiones página (cm): {DocumentModel.points_to_cm(page_rect.width):.2f}x{page_height_cm:.2f}")
+        print(f"Tamaño imagen (cm): {w_img_cm:.2f}x{h_img_cm:.2f}")
+        print(f"Posición solicitada (cm desde arriba): ({pos_x_cm:.2f}, {pos_y_cm:.2f})")
+        
+        # CAMBIO: Ya no invertimos Y, asumimos mismo sistema que Qt
+        y_final_cm = pos_y_cm
+        
+        print(f"""
+Cálculo de Y:
+  - Altura página: {page_height_cm:.2f} cm
+  - Posición Y desde arriba: {pos_y_cm:.2f} cm
+  - Altura imagen: {h_img_cm:.2f} cm
+  - Y final = {y_final_cm:.2f} cm (mantenemos Y desde arriba)
+""")
+        
+        # Convertir a puntos PDF manteniendo el sistema de coordenadas
         x0 = position['x']
-        y0 = page_rect.height - position['y'] - h_img  # Convertir Y e incluir altura de imagen
+        y0 = position['y']  # Usamos Y directamente
         x1 = x0 + w_img
         y1 = y0 + h_img
         
-        print(f"Rectángulo final PDF: ({x0}, {y0}) -> ({x1}, {y1})")
+        print(f"""
+Rectángulo final:
+  - En centímetros: ({pos_x_cm:.2f}, {y_final_cm:.2f}) -> ({pos_x_cm + w_img_cm:.2f}, {y_final_cm + h_img_cm:.2f})
+  - En puntos PDF: ({x0:.2f}, {y0:.2f}) -> ({x1:.2f}, {y1:.2f})
+""")
+        
         return fitz.Rect(x0, y0, x1, y1)
 
     def test_simple_insertion(self, pdf_path: str, output_path: str, signature_path: str):
