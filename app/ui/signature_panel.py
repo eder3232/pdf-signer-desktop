@@ -203,4 +203,14 @@ class SignaturePanel(QWidget):
         # Crear widgets para firmas existentes
         if document:
             for i, signature in enumerate(document.signatures):
-                self.add_signature_widget(signature, i) 
+                self.add_signature_widget(signature, i)
+
+    def clear_signatures(self):
+        """Limpia todas las firmas"""
+        # Limpiar widgets existentes
+        for widget in self.signature_widgets.values():
+            widget.deleteLater()
+        self.signature_widgets.clear()
+        
+        # Limpiar documento
+        self.document = None 

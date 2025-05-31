@@ -6,19 +6,32 @@ from PySide6.QtCore import Qt, QRectF, QPointF
 from PySide6.QtGui import QPixmap, QImage, QPainter
 from PIL.ImageQt import ImageQt
 from PIL import Image
-from typing import Dict
+from typing import Dict, List
+from .mode_selector import ModeSelector
 from ..models.document_model import DocumentModel
+from ..models.signature_mode_config import SignatureMode, SignatureModeConfig
 from ..core.preview_generator import PreviewGenerator
 from PyPDF2 import PdfReader
 import fitz  # PyMuPDF
 import io
 
 class SignatureItem(QGraphicsPixmapItem):
-    def __init__(self, pixmap, signature_index: int):
+    def __init__(self, pixmap, signature_index: int, original_size: tuple):
         super().__init__(pixmap)
         self.signature_index = signature_index
+        self.original_pixmap = pixmap
+        self.original_size = original_size  # (width, height)
         self.setFlag(QGraphicsPixmapItem.ItemIsMovable)
         self.setFlag(QGraphicsPixmapItem.ItemIsSelectable)
+        
+    def update_size(self, new_size: tuple):
+        """Actualiza el tamaño de la firma manteniendo la proporción"""
+        scaled_pixmap = self.original_pixmap.scaled(
+            new_size[0], new_size[1],
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.setPixmap(scaled_pixmap)
         
     def mousePressEvent(self, event):
         """Selecciona el item al hacer clic"""
@@ -36,7 +49,7 @@ class PDFScene(QGraphicsScene):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.document = None
-        self.signature_items: Dict[int, SignatureItem] = {}
+        self.signature_items = {}  # Asegurar que siempre existe
         
     def update_signature_position(self, item: SignatureItem):
         """Actualiza la posición de la firma en el modelo"""
@@ -81,16 +94,29 @@ class PDFScene(QGraphicsScene):
         else:
             super().wheelEvent(event)
 
+    def clear(self):
+        """Sobrescribir clear para limpiar también signature_items"""
+        super().clear()
+        self.signature_items.clear()
+        self.document = None
+
 class CanvasView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.document = None
         self.current_page = 0
+        self.mode_indicator = QLabel()
+        self.affected_pages_indicator = QLabel()
         self.init_ui()
 
     def init_ui(self):
         """Inicializa la interfaz"""
         layout = QVBoxLayout(self)
+        
+        # Selector de modo
+        self.mode_selector = ModeSelector(self)
+        self.mode_selector.mode_changed.connect(self.on_mode_changed)
+        layout.addWidget(self.mode_selector)
         
         # Selector de página
         page_layout = QHBoxLayout()
@@ -128,15 +154,29 @@ class CanvasView(QWidget):
         self.debug_label = QLabel("")
         layout.addWidget(self.debug_label)
 
+        # Mode indicators
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Modo:"))
+        mode_layout.addWidget(self.mode_indicator)
+        layout.addLayout(mode_layout)
+        
+        affected_layout = QHBoxLayout()
+        affected_layout.addWidget(QLabel("Páginas a firmar:"))
+        affected_layout.addWidget(self.affected_pages_indicator)
+        layout.addLayout(affected_layout)
+
     def load_document(self, document):
         """Carga un nuevo documento"""
         self.document = document
-        self.scene.document = document  # Importante: actualizar también la escena
+        self.scene.document = document
         
         # Actualizar selector de páginas
         self.page_selector.clear()
         for i in range(document.total_pages):
             self.page_selector.addItem(f"Página {i + 1}")
+        
+        # Actualizar selector de modo
+        self.mode_selector.update_for_document(document.total_pages)
         
         # Establecer página inicial
         self.current_page = 0
@@ -145,103 +185,95 @@ class CanvasView(QWidget):
         # Actualizar vista
         self.update_preview()
         self.fit_to_view()
+        self.update_mode_indicators()
         
         self.debug_label.setText("Documento cargado")
 
+    def on_mode_changed(self, mode_config: SignatureModeConfig):
+        """Maneja cambios en el modo de firma"""
+        if self.document:
+            print(f"Actualizando modo a: {mode_config.mode.value}")
+            self.document.signature_mode = mode_config
+            
+            # Actualizar selector de páginas según el modo
+            self.page_selector.clear()
+            if mode_config.mode == SignatureMode.MASIVO:
+                self.page_selector.addItem("Primera Página (Plantilla)", 0)
+                self.page_selector.addItem("Última Página", self.document.total_pages - 1)
+                # Mostrar mensaje informativo
+                self.debug_label.setText(
+                    "Modo Masivo: La firma en la primera página se replicará en todas excepto la última"
+                )
+            else:
+                for i in range(self.document.total_pages):
+                    self.page_selector.addItem(f"Página {i + 1}", i)
+                self.debug_label.setText("")
+            
+            # Actualizar vista
+            self.current_page = self.page_selector.currentData()
+            self.update_preview()
+            self.update_mode_indicators()
+
     def update_preview(self):
-        """Actualiza la vista previa"""
-        if not self.document:
+        """Actualiza la vista previa del PDF"""
+        if not self.document or not hasattr(self, 'scene'):
+            print("No hay documento o escena para mostrar")
             return
         
-        # Establecer fondo gris claro
-        self.scene.setBackgroundBrush(Qt.GlobalColor.lightGray)
-        
         try:
-            self.scene.clear()  # Limpiar escena antes de actualizar
-            print("\n=== Iniciando actualización de vista previa ===")
-            print(f"Documento: {self.document.pdf_path}")
-            print(f"Página actual: {self.current_page}")
-            print(f"Total firmas: {len(self.document.signatures)}")
+            # Validar página actual
+            if self.current_page is None:
+                print("No hay página seleccionada")
+                return
             
-            # Abrir documento PDF
-            pdf_document = fitz.open(self.document.pdf_path)
-            page = pdf_document[self.current_page]
+            if not (0 <= self.current_page < self.document.total_pages):
+                print(f"Página inválida: {self.current_page}")
+                return
             
-            # Renderizar página
-            zoom = 2.0  # Factor de zoom para mejor calidad
-            mat = fitz.Matrix(zoom, zoom)
-            pix = page.get_pixmap(matrix=mat)
-            print(f"Página renderizada: {pix.width}x{pix.height}")
+            print(f"Actualizando vista previa de página {self.current_page + 1}")
             
-            # Convertir a QPixmap
-            img_data = pix.samples
-            qimg = QImage(img_data, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
-            pixmap = QPixmap.fromImage(qimg)
+            # Limpiar escena
+            self.scene.clear()
             
-            # Añadir página a la escena
+            # Factor de zoom para la vista previa (2x por defecto)
+            zoom = 2.0
+            
+            # Generar vista previa de la página actual
+            preview = PreviewGenerator.generate_page_preview(
+                self.document.pdf_path, 
+                self.current_page
+            )
+            
+            # Convertir a QPixmap y mostrar
+            pixmap = QPixmap.fromImage(ImageQt(preview))
             page_item = self.scene.addPixmap(pixmap)
-            page_item.setZValue(0)
-            
-            # Obtener dimensiones de la página actual
-            page_dims = self.document.page_dimensions[self.current_page]
-            page_width = float(page_dims.width)
-            page_height = float(page_dims.height)
-            print(f"Dimensiones de página: {page_width}x{page_height}")
             
             # Añadir firmas si existen
-            for i, signature in enumerate(self.document.signatures):
-                if signature.page_number == self.current_page:
-                    try:
-                        print(f"\nProcesando firma {i}:")
-                        print(f"  Ruta: {signature.image_path}")
-                        print(f"  Posición: ({signature.position.x}, {signature.position.y})")
-                        
+            if self.document.signatures:
+                for i, signature in enumerate(self.document.signatures):
+                    if signature.page_number == self.current_page:
                         # Cargar imagen de firma
-                        sig_img = Image.open(signature.image_path)
-                        print(f"  Tamaño original: {sig_img.size}")
+                        sig_image = Image.open(signature.image_path)
+                        sig_pixmap = QPixmap.fromImage(ImageQt(sig_image))
                         
-                        # Redimensionar firma manteniendo proporción
-                        desired_width = int(signature.size.width * zoom)  # Usar el tamaño del modelo
-                        aspect_ratio = sig_img.height / sig_img.width
-                        desired_height = int(desired_width * aspect_ratio)
-                        print(f"  Tamaño a renderizar: {desired_width}x{desired_height}")
+                        # Tamaño original en puntos PDF
+                        original_size = (
+                            signature.size.width * zoom,
+                            signature.size.height * zoom
+                        )
                         
-                        # Convertir y redimensionar
-                        sig_img = sig_img.convert('RGBA')
-                        sig_img = sig_img.resize((desired_width, desired_height), Image.Resampling.LANCZOS)
-                        
-                        sig_qimg = ImageQt(sig_img)
-                        sig_pixmap = QPixmap.fromImage(sig_qimg)
-                        
-                        # Crear y posicionar item
-                        sig_item = SignatureItem(sig_pixmap, i)
-                        sig_item.setZValue(1)
-                        
-                        # Calcular posición
-                        if signature.position.x == 0 and signature.position.y == 0:
-                            x = (page_width * zoom - desired_width) / 2
-                            y = (page_height * zoom - desired_height) / 2
-                        else:
-                            x = signature.position.x * zoom
-                            # Convertir de coordenadas PDF a Qt
-                            y = (page_height - signature.position.y) * zoom - desired_height
-                        
-                        print(f"  Posicionando firma en: ({x}, {y})")
-                        sig_item.setPos(x, y)
+                        # Crear y posicionar item de firma
+                        sig_item = SignatureItem(sig_pixmap, i, original_size)
+                        sig_item.setPos(
+                            signature.position.x * zoom,
+                            signature.position.y * zoom
+                        )
+                        sig_item.update_size(original_size)
                         self.scene.addItem(sig_item)
-                        
-                    except Exception as e:
-                        print(f"Error al procesar firma {i}: {e}")
-                        import traceback
-                        traceback.print_exc()
+                        self.scene.signature_items[i] = sig_item
             
-            # Ajustar vista
-            self.graphics_view.setSceneRect(QRectF(0, 0, pixmap.width(), pixmap.height()))
-            self.fit_to_view()
-            
-            pdf_document.close()
-            print("=== Actualización de vista previa completada ===\n")
-            self.debug_label.setText("Vista previa actualizada")
+            # Actualizar indicadores
+            self.update_mode_indicators()
             
         except Exception as e:
             print(f"Error en update_preview: {e}")
@@ -249,11 +281,29 @@ class CanvasView(QWidget):
             traceback.print_exc()
             self.debug_label.setText(f"Error en vista previa: {str(e)}")
 
+    def _get_preview_pages(self) -> List[int]:
+        """Determina qué páginas mostrar según el modo actual"""
+        if not self.document:
+            return []
+            
+        mode = self.document.signature_mode.mode
+        if mode == SignatureMode.MASIVO:
+            # En modo masivo, mostrar primera y última página
+            return [0, self.document.total_pages - 1]
+        else:
+            # En otros modos, mostrar la página actual
+            return [self.current_page]
+
     def change_page(self, index):
         """Cambia la página actual"""
-        if 0 <= index < self.document.total_pages:
-            self.current_page = index
-            self.update_preview()
+        if index >= 0 and self.document:
+            page_number = self.page_selector.itemData(index)
+            if page_number is not None:
+                print(f"\n=== Cambiando a página {page_number + 1} ===")
+                self.current_page = page_number
+                self.update_preview()
+            else:
+                print(f"Error: Índice de página inválido: {index}")
 
     def resizeEvent(self, event):
         """Ajusta la vista cuando se redimensiona el widget"""
@@ -290,12 +340,85 @@ class CanvasView(QWidget):
         """Actualiza la posición de la firma en el modelo"""
         if self.document and item.signature_index < len(self.document.signatures):
             signature = self.document.signatures[item.signature_index]
+            old_page = signature.page_number
+            
+            print("\n=== Actualizando posición de firma ===")
+            print(f"Firma #{item.signature_index + 1} en página {self.current_page + 1}")
             
             # Actualizar página actual
             signature.page_number = self.current_page
             
-            # Actualizar posición en el modelo a través de la escena
-            self.scene.update_signature_position(item)
+            # En modo masivo, actualizar todas las firmas si movemos la primera
+            if (self.document.signature_mode.mode == SignatureMode.MASIVO and 
+                old_page == 0 and self.current_page == 0):
+                pos = item.pos()
+                print("Modo masivo: Actualizando todas las firmas")
+                for sig in self.document.signatures[:-1]:  # Excluir última página
+                    sig.position.x = pos.x() / 2.0  # Convertir coordenadas UI a PDF
+                    sig.position.y = pos.y() / 2.0
+                    print(f"Posición actualizada: ({sig.position.x:.2f}, {sig.position.y:.2f})")
+            else:
+                # Actualizar posición normal
+                self.scene.update_signature_position(item)
             
             # Actualizar vista previa
-            self.update_preview() 
+            self.update_preview()
+
+    def update_mode_indicators(self):
+        """Actualiza indicadores visuales del modo de firma"""
+        if not self.document:
+            self.mode_indicator.setText("Sin documento")
+            self.affected_pages_indicator.setText("")
+            return
+        
+        try:
+            mode = self.document.signature_mode
+            pages_to_sign = self.document.get_pages_to_sign() or []
+            
+            # Actualizar etiqueta de modo
+            mode_text = f"Modo: {mode.mode.value.title()}"
+            if mode.mode == SignatureMode.PLANTILLA:
+                mode_text += f" (cada {mode.pattern_interval} páginas)"
+            elif mode.mode == SignatureMode.MASIVO:
+                mode_text += " (Primera página define todas excepto la última)"
+            self.mode_indicator.setText(mode_text)
+            
+            # Actualizar indicador de páginas afectadas
+            affected = f"Páginas a firmar: {len(pages_to_sign)} de {self.document.total_pages}"
+            if mode.mode == SignatureMode.SELECTIVO:
+                excluded = len(mode.excluded_pages)
+                affected += f" (excluidas: {excluded})"
+            self.affected_pages_indicator.setText(affected)
+            
+        except Exception as e:
+            print(f"Error actualizando indicadores: {e}")
+            self.mode_indicator.setText("Error en modo")
+            self.affected_pages_indicator.setText("")
+
+    def update_signature_size(self, signature_index: int, new_size: tuple):
+        """Actualiza el tamaño de una firma específica"""
+        if signature_index in self.scene.signature_items:
+            sig_item = self.scene.signature_items[signature_index]
+            sig_item.update_size(new_size)
+            
+            # Actualizar tamaño en el modelo
+            signature = self.document.signatures[signature_index]
+            signature.size.width = new_size[0] / 2.0  # Convertir de UI a puntos PDF
+            signature.size.height = new_size[1] / 2.0 
+
+    def clear_view(self):
+        """Limpia la vista del canvas"""
+        if hasattr(self, 'scene'):
+            # Limpiar escena
+            self.scene.clear()
+            if hasattr(self.scene, 'signature_items'):
+                self.scene.signature_items.clear()
+            self.scene.document = None
+            
+        # Resetear estado del canvas
+        self.current_page = 0
+        self.document = None
+        self.page_selector.clear()
+        self.debug_label.setText("")
+        self.mode_indicator.setText("Sin documento")
+        self.affected_pages_indicator.setText("") 

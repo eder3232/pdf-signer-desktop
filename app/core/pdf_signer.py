@@ -48,105 +48,89 @@ class PDFSigner:
         }
 
     def insert_signature(self, pdf_path: str, output_path: str, signatures: list[Dict[str, Any]]):
-        """Inserta las firmas en el PDF usando la lógica probada de sellador_carpetas_v3.py"""
-        print("\n=== DEBUG: Firmas a insertar ===")
-        for sig in signatures:
-            print(f"""
-Firma:
-  - Página: {sig['page_number']}
-  - Posición (puntos): ({sig['position']['x']:.2f}, {sig['position']['y']:.2f})
-  - Posición (cm desde arriba): ({DocumentModel.points_to_cm(sig['position']['x']):.2f}, {DocumentModel.points_to_cm(sig['position']['y']):.2f})
-  - Tamaño (puntos): {sig['size']['width']}x{sig['size']['height']}
-  - Tamaño (cm): {DocumentModel.points_to_cm(sig['size']['width']):.2f}x{DocumentModel.points_to_cm(sig['size']['height']):.2f}
-  - Ruta: {sig['image_path']}
-""")
+        """Inserta las firmas en el PDF usando la lógica probada"""
+        print("\n=== INICIO DE PROCESO DE FIRMA ===")
+        print(f"Total de firmas a procesar: {len(signatures)}")
         
-        print("\n=== Iniciando proceso de inserción de firmas ===")
-        print(f"PDF origen: {pdf_path}")
-        print(f"PDF destino: {output_path}")
-        print(f"Total firmas a procesar: {len(signatures)}")
-        
+        # Abrir documento original
         doc = fitz.open(pdf_path)
-        print(f"PDF abierto correctamente. Total páginas: {len(doc)}")
+        total_pages = len(doc)
+        print(f"PDF abierto: {pdf_path}")
+        print(f"Total páginas en documento: {total_pages}")
         
-        for idx, signature in enumerate(signatures):
-            print(f"\nProcesando firma {idx + 1}:")
-            print(f"  Página objetivo: {signature['page_number'] + 1}")
-            print(f"  Archivo de firma: {signature['image_path']}")
-            print(f"  Posición solicitada: x={signature['position']['x']:.2f}, y={signature['position']['y']:.2f}")
-            
-            page = doc[signature['page_number']]
-            rect = page.rect
-            print(f"  Dimensiones de página: {rect.width:.2f}x{rect.height:.2f}")
-            
-            # Detectar escenario según dimensiones
-            escenario = self._detectar_escenario(rect.width, rect.height)
-            print(f"  Escenario detectado: {escenario['nombre']}")
-            print(f"  Orientación: {escenario['orientacion']}")
-            
-            try:
-                # Cargar y preparar imagen
-                with Image.open(signature['image_path']) as img:
-                    print(f"  Imagen cargada: {img.size}, modo={img.mode}")
-                    img = img.convert('RGBA')
-                    
-                    # Aplicar transformaciones según escenario y parámetros
-                    img_transformed = self._prepare_image(
-                        img, 
-                        signature['size'],
-                        escenario
-                    )
-                    print(f"  Imagen transformada: {img_transformed.size}")
-                    
-                    # Convertir a bytes
-                    buffer = io.BytesIO()
-                    img_transformed.save(buffer, format="PNG", compress_level=0)
-                    buffer.seek(0)
-                    img_bytes = buffer.getvalue()
-                    print(f"  Bytes de imagen generados: {len(img_bytes)} bytes")
-                    
-                    # Insertar en PDF
-                    pix = fitz.Pixmap(img_bytes)
-                    print(f"  Pixmap creado: {pix.width}x{pix.height}, alpha={pix.alpha}")
-                    
-                    signature_rect = self._calculate_position(
-                        page.rect,
-                        signature['position'],
-                        img_transformed.size,
-                        escenario
-                    )
-                    print(f"  Rectángulo calculado: {signature_rect}")
-                    
-                    # Insertar imagen con parámetros específicos
-                    try:
-                        page.insert_image(
-                            signature_rect,
-                            pixmap=pix,
-                            overlay=True  # Asegurar que se superpone
-                        )
-                        print("  Imagen insertada correctamente")
-                    except Exception as e:
-                        print(f"  Error al insertar imagen: {e}")
-                        raise
-                    
-            except Exception as e:
-                print(f"Error procesando firma: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
+        # Crear documento temporal para el resultado
+        result_doc = fitz.open()
         
-        print("\nGuardando PDF final...")
         try:
-            doc.save(output_path, garbage=4, deflate=True)
-            print("PDF guardado correctamente")
+            # Procesar cada página
+            for page_num in range(total_pages):
+                print(f"\n=== Procesando página {page_num + 1} ===")
+                
+                # Copiar página original
+                page = doc[page_num]
+                result_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
+                result_page = result_doc[page_num]
+                
+                # Buscar firmas para esta página
+                page_signatures = [sig for sig in signatures if sig['page_number'] == page_num]
+                
+                if page_signatures:
+                    print(f"Encontradas {len(page_signatures)} firmas para esta página")
+                    
+                    for idx, signature in enumerate(page_signatures, 1):
+                        try:
+                            print(f"\nProcesando firma #{idx} en página {page_num + 1}")
+                            
+                            # Cargar y preparar imagen de firma
+                            with Image.open(signature['image_path']) as img:
+                                print(f"Firma cargada: {img.size}, modo={img.mode}")
+                                img = img.convert('RGBA')
+                                
+                                # Convertir a bytes
+                                buffer = io.BytesIO()
+                                img.save(buffer, format="PNG")
+                                img_bytes = buffer.getvalue()
+                                
+                                # Crear Pixmap y rectángulo de inserción
+                                pix = fitz.Pixmap(img_bytes)
+                                x0 = signature['position']['x']
+                                y0 = signature['position']['y']
+                                x1 = x0 + signature['size']['width']
+                                y1 = y0 + signature['size']['height']
+                                
+                                print(f"""
+Insertando firma:
+  - Posición inicial: ({x0:.2f}, {y0:.2f})
+  - Posición final: ({x1:.2f}, {y1:.2f})
+  - Tamaño final: {signature['size']['width']:.2f}x{signature['size']['height']:.2f}
+""")
+                                
+                                # Insertar firma
+                                signature_rect = fitz.Rect(x0, y0, x1, y1)
+                                result_page.insert_image(signature_rect, pixmap=pix)
+                                print(f"Firma insertada correctamente")
+                                
+                        except Exception as e:
+                            print(f"ERROR al procesar firma #{idx} en página {page_num + 1}: {str(e)}")
+                            import traceback
+                            traceback.print_exc()
+                else:
+                    print("No hay firmas para esta página")
+            
+            # Guardar resultado
+            print("\n=== Guardando documento final ===")
+            print(f"Ruta destino: {output_path}")
+            result_doc.save(output_path)
+            print("Documento guardado exitosamente")
+            
         except Exception as e:
-            print(f"Error al guardar PDF: {e}")
+            print(f"ERROR en el proceso: {str(e)}")
+            traceback.print_exc()
             raise
         finally:
             doc.close()
-            print("Documento cerrado")
-        
-        print("=== Proceso de inserción completado ===\n")
+            result_doc.close()
+            print("\n=== PROCESO DE FIRMA COMPLETADO ===")
 
     def _detectar_escenario(self, width: float, height: float) -> Dict:
         """Detecta el escenario basado en las dimensiones de la página"""
@@ -252,4 +236,17 @@ Rectángulo final:
         # Guardar
         doc.save(output_path)
         doc.close()
-        print("=== Test completado ===\n") 
+        print("=== Test completado ===\n")
+
+    def apply_signatures(self, output_path: str) -> None:
+        """Aplica las firmas al PDF y guarda el resultado"""
+        if self.document.signature_mode.mode == SignatureMode.MASIVO:
+            # Verificar que tenemos al menos una firma
+            if not self.document.signatures:
+                raise ValueError("No hay firmas para aplicar")
+            
+            # Verificar que la primera firma está en la página 0
+            if not any(sig.page_number == 0 for sig in self.document.signatures):
+                raise ValueError("En modo masivo, debe haber una firma en la primera página")
+        
+        # Resto del código de aplicación de firmas... 

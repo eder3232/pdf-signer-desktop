@@ -6,6 +6,8 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 from PIL.ImageQt import ImageQt
+import fitz
+import os
 
 class PreviewGenerator:
     def __init__(self, dpi: int = 300):
@@ -18,42 +20,38 @@ class PreviewGenerator:
         self.dpi = dpi
         self._scale_factor = dpi / 72.0  # 72 puntos = 1 pulgada
 
-    def generate_page_preview(
-        self,
-        pdf_reader: PdfReader,
-        page_number: int = 0,
-        signatures: List[Dict[str, Any]] = None
-    ) -> Image.Image:
-        """Genera vista previa de página PDF con firmas"""
-        # Crear un PDF temporal con el contenido
-        output = io.BytesIO()
-        c = canvas.Canvas(output)
-        
-        # Obtener dimensiones de la página
-        page = pdf_reader.pages[page_number]
-        width = float(page.mediabox.width)
-        height = float(page.mediabox.height)
-        
-        # Dibujar contenido
-        c.setPageSize((width, height))
-        c.drawString(100, height - 50, "Página {}".format(page_number + 1))
-        c.grid([x * 100 for x in range(0, int(width), 100)],
-               [y * 100 for y in range(0, int(height), 100)])
-        c.save()
-        
-        # Convertir a imagen
-        output.seek(0)
-        preview = Image.new('RGB', 
-                          (int(width * self._scale_factor), 
-                           int(height * self._scale_factor)), 
-                          'white')
-        
-        # Superponer firmas si existen
-        if signatures:
-            for sig in signatures:
-                self._overlay_signature(preview, sig)
-        
-        return preview
+    @staticmethod
+    def generate_page_preview(pdf_path: str, page_number: int | None) -> Image:
+        """Genera una vista previa de una página del PDF"""
+        try:
+            # Validar parámetros
+            if not pdf_path or not os.path.exists(pdf_path):
+                raise ValueError("Ruta de PDF inválida")
+            if page_number is None:
+                raise ValueError("Número de página no especificado")
+            
+            # Abrir documento
+            doc = fitz.open(pdf_path)
+            if not (0 <= page_number < len(doc)):
+                raise ValueError(f"Número de página inválido: {page_number}")
+            
+            # Obtener página
+            page = doc[page_number]
+            
+            # Generar imagen
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            img_data = pix.tobytes("png")
+            
+            # Convertir a imagen PIL
+            return Image.open(io.BytesIO(img_data))
+            
+        except Exception as e:
+            print(f"Error generando vista previa: {str(e)}")
+            # Retornar una imagen en blanco como fallback
+            return Image.new('RGB', (595, 842), 'white')  # Tamaño A4
+        finally:
+            if 'doc' in locals():
+                doc.close()
 
     def _overlay_signature(self, preview: Image.Image, signature: Dict) -> None:
         """Superpone una firma en la vista previa"""

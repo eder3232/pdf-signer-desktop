@@ -2,6 +2,13 @@ from pydantic import BaseModel, Field, validator
 from typing import Tuple, Optional
 from PIL import Image
 import os
+from enum import Enum
+
+# Añadir la clase SignatureMode
+class SignatureMode(Enum):
+    NORMAL = "normal"
+    PLANTILLA = "plantilla"
+    SELECTIVO = "selectivo"
 
 class SignaturePosition(BaseModel):
     x: float = Field(..., description="Posición X en puntos PDF")
