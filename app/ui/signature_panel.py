@@ -46,40 +46,31 @@ class SignatureWidget(QFrame):
         
     def update_size(self, value):
         """Actualiza el tamaño de la firma cuando cambia el slider"""
-        print(f"\n=== Actualizando tamaño de firma {self.index + 1} ===")
-        print(f"Nuevo valor del slider: {value}%")
+        print(f"\n=== Actualizando tamaño de firma ===")
+        print(f"Valor slider: {value}%")
         
-        self.size_label.setText(f"{value}%")
-        
-        # Actualizar el modelo
+        # Obtener dimensiones de la página actual
         main_window = self.window()
-        if hasattr(main_window, 'canvas_view'):
-            canvas_view = main_window.canvas_view
-            
-            # Obtener dimensiones de la página actual
-            page_dims = canvas_view.document.page_dimensions[self.signature.page_number]
-            page_width = float(page_dims.width)
-            
-            # Calcular nuevo tamaño basado en el porcentaje
-            new_width = page_width * (value / 100.0)
-            
-            # Mantener proporción de aspecto
-            with Image.open(self.signature.image_path) as img:
-                aspect_ratio = img.height / img.width
-                new_height = new_width * aspect_ratio
-            
-            print(f"Nuevo tamaño: {new_width:.2f}x{new_height:.2f}")
-            
-            # Actualizar dimensiones en el modelo
-            self.signature.size.width = new_width
-            self.signature.size.height = new_height
-            
-            # Forzar actualización de la vista
-            canvas_view.scene.clear()
-            canvas_view.update_preview()
-            canvas_view.fit_to_view()
-            
-            print("=== Actualización de tamaño completada ===\n")
+        canvas_view = main_window.canvas_view
+        page_dims = canvas_view.document.page_dimensions[self.signature.page_number]
+        page_width = float(page_dims.width)
+        
+        # Calcular nuevo tamaño en puntos PDF
+        new_width = page_width * (value / 100.0)
+        
+        # Mantener proporción
+        with Image.open(self.signature.image_path) as img:
+            aspect_ratio = img.height / img.width
+            new_height = new_width * aspect_ratio
+        
+        print(f"Nuevo tamaño en puntos PDF: {new_width:.2f}x{new_height:.2f}")
+        
+        # Actualizar modelo
+        self.signature.size.width = new_width
+        self.signature.size.height = new_height
+        
+        # Actualizar UI
+        canvas_view.update_preview()
 
 class SignaturePanel(QWidget):
     def __init__(self, parent=None):

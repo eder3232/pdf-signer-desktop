@@ -44,13 +44,31 @@ class PDFScene(QGraphicsScene):
             pos = item.pos()
             signature = self.document.signatures[item.signature_index]
             
-            # Convertir coordenadas de escena a PDF (considerando el zoom)
-            zoom = 2.0  # Debe coincidir con el zoom usado en update_preview
-            page_height = float(self.document.page_dimensions[signature.page_number].height)
+            # Factor de zoom usado en la vista previa
+            zoom = 2.0
             
-            # Convertir coordenadas Qt (arriba-izquierda) a PDF (abajo-izquierda)
-            signature.position.x = pos.x() / zoom
-            signature.position.y = (page_height * zoom - pos.y()) / zoom
+            # Obtener dimensiones de la página actual
+            page_dims = self.document.page_dimensions[signature.page_number]
+            page_height = float(page_dims.height)
+            
+            print("\n=== DEBUG: Actualización de posición ===")
+            print(f"Posición UI (raw): ({pos.x()}, {pos.y()})")
+            print(f"Dimensiones página: {page_dims.width}x{page_height}")
+            print(f"Altura firma: {signature.size.height}")
+            
+            # Convertir coordenadas
+            pdf_x = pos.x() / zoom
+            # Convertir Y considerando:
+            # 1. Quitar el zoom
+            # 2. Invertir desde abajo (página PDF) a desde arriba (Qt)
+            # 3. Considerar altura de la firma
+            ui_y = pos.y() / zoom  # Quitar zoom
+            pdf_y = ui_y  # Mantener Y como está en UI
+            
+            signature.position.x = pdf_x
+            signature.position.y = pdf_y
+            
+            print(f"Posición convertida a PDF: ({pdf_x}, {pdf_y})")
 
     def wheelEvent(self, event):
         """Maneja el zoom con la rueda del mouse"""
@@ -138,6 +156,9 @@ class CanvasView(QWidget):
         if not self.document:
             return
         
+        # Establecer fondo gris claro
+        self.scene.setBackgroundBrush(Qt.GlobalColor.lightGray)
+        
         try:
             self.scene.clear()  # Limpiar escena antes de actualizar
             print("\n=== Iniciando actualización de vista previa ===")
@@ -203,12 +224,12 @@ class CanvasView(QWidget):
                         if signature.position.x == 0 and signature.position.y == 0:
                             x = (page_width * zoom - desired_width) / 2
                             y = (page_height * zoom - desired_height) / 2
-                            print(f"  Centrando firma en: ({x}, {y})")
                         else:
                             x = signature.position.x * zoom
-                            y = signature.position.y * zoom
-                            print(f"  Posicionando firma en: ({x}, {y})")
+                            # Convertir de coordenadas PDF a Qt
+                            y = (page_height - signature.position.y) * zoom - desired_height
                         
+                        print(f"  Posicionando firma en: ({x}, {y})")
                         sig_item.setPos(x, y)
                         self.scene.addItem(sig_item)
                         
@@ -269,21 +290,15 @@ class CanvasView(QWidget):
             self.fit_to_view()  # Asegurar que se ajusta a la vista 
 
     def update_signature_position(self, item):
-        print(f"Actualizando posición de firma: {item.pos()}")
+        """Actualiza la posición de la firma en el modelo"""
         if self.document and item.signature_index < len(self.document.signatures):
-            pos = item.pos()
             signature = self.document.signatures[item.signature_index]
             
-            # Convertir coordenadas de escena a PDF (considerando el zoom)
-            zoom = 2.0  # Debe coincidir con el zoom usado en update_preview
-            page_height = float(self.document.page_dimensions[signature.page_number].height)
+            # Actualizar página actual
+            signature.page_number = self.current_page
             
-            # Convertir coordenadas Qt (arriba-izquierda) a PDF (abajo-izquierda)
-            signature.position.x = pos.x() / zoom
-            signature.position.y = (page_height * zoom - pos.y()) / zoom
-
+            # Actualizar posición en el modelo a través de la escena
+            self.scene.update_signature_position(item)
+            
             # Actualizar vista previa
-            self.update_preview()
-
-            # Actualizar posición en el modelo
-            self.scene.update_signature_position(item) 
+            self.update_preview() 
